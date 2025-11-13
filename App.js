@@ -1,0 +1,65 @@
+// App.js - Main application file
+
+import React from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+import { IoTProvider } from './src/contexts/IoTContext';
+
+// Screens
+import LoginScreen from './src/screens/LoginScreen';
+import HomeScreen from './src/screens/HomeScreen';
+import BluetoothScreen from './src/screens/BluetoothScreen';
+import LocationScreen from './src/screens/LocationScreen';
+import HistoryScreen from './src/screens/HistoryScreen';
+
+const Stack = createNativeStackNavigator();
+
+// Navigation component
+const AppNavigator = () => {
+    const { isAuthenticated, loading } = useAuth();
+
+    if (loading) {
+        // Có thể thêm màn hình loading ở đây
+        return null;
+    }
+
+    return (
+        <NavigationContainer>
+            <Stack.Navigator
+                screenOptions={{
+                    headerShown: false,
+                    animation: 'slide_from_right'
+                }}
+            >
+                {!isAuthenticated ? (
+                    // Auth Stack
+                    <>
+                        <Stack.Screen name="Login" component={LoginScreen} />
+                    </>
+                ) : (
+                    // Main App Stack
+                    <>
+                        <Stack.Screen name="Home" component={HomeScreen} />
+                        <Stack.Screen name="Bluetooth" component={BluetoothScreen} />
+                        <Stack.Screen name="Location" component={LocationScreen} />
+                        <Stack.Screen name="History" component={HistoryScreen} />
+                    </>
+                )}
+            </Stack.Navigator>
+        </NavigationContainer>
+    );
+};
+
+// Main App component
+const App = () => {
+    return (
+        <AuthProvider>
+            <IoTProvider>
+                <AppNavigator />
+            </IoTProvider>
+        </AuthProvider>
+    );
+};
+
+export default App;
