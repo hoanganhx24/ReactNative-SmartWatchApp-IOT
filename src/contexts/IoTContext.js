@@ -1,11 +1,12 @@
-// IoT Context - Quản lý dữ liệu realtime từ thiết bị IoT
+// IoTContext.js - Context quản lý kết nối BLE và dữ liệu IoT
 
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import apiService from '../services/api.service';
-import bluetoothService from '../services/bluetooth.service';
-import locationService from '../services/location.service';
-import notificationService from '../services/notification.service';
-import { useAuth } from './AuthContext';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { Platform, PermissionsAndroid, Alert } from 'react-native';
+import { BleManager } from 'react-native-ble-plx';
+
+// UUID phải khớp với ESP32
+const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 
 const IoTContext = createContext();
 
@@ -18,300 +19,314 @@ export const useIoT = () => {
 };
 
 export const IoTProvider = ({ children }) => {
-    const { user } = useAuth();
+    // BLE Manager
+    const [bleManager] = useState(() => new BleManager());
 
-    // State cho Bluetooth
+    // Connection states
     const [isBluetoothConnected, setIsBluetoothConnected] = useState(false);
     const [connectedDevice, setConnectedDevice] = useState(null);
     const [availableDevices, setAvailableDevices] = useState([]);
 
-    // State cho dữ liệu realtime
-    const [heartRate, setHeartRate] = useState(null);
-    const [status, setStatus] = useState('normal');
-    const [location, setLocation] = useState(null);
+    // Sensor data
+    const [sensorData, setSensorData] = useState({
+        temperature: null,
+        humidity: null,
+        light: null,
+        sensor: null,
+        status: false,
+        timestamp: null,
+    });
 
-    // State cho lịch sử
-    const [measurementHistory, setMeasurementHistory] = useState([]);
-
-    // State khác
+    // Loading states
     const [loading, setLoading] = useState(false);
-    const [error, setError] = useState(null);
+    const [scanning, setScanning] = useState(false);
 
-    // Kết nối realtime khi user đăng nhập
+    // History data
+    const [dataHistory, setDataHistory] = useState([]);
+
     useEffect(() => {
-        if (user) {
-            startRealtimeConnection();
-            return () => stopRealtimeConnection();
+        // Yêu cầu quyền khi khởi động
+        requestBluetoothPermissions();
+
+        // Cleanup khi unmount
+        return () => {
+            if (connectedDevice) {
+                disconnectBluetooth();
+            }
+            bleManager.destroy();
+        };
+    }, []);
+
+    // ============================================
+    // YÊU CẦU QUYỀN BLUETOOTH
+    // ============================================
+    const requestBluetoothPermissions = async () => {
+        if (Platform.OS === 'android') {
+            if (Platform.Version >= 31) {
+                // Android 12+
+                try {
+                    const granted = await PermissionsAndroid.requestMultiple([
+                        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+                        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+                        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+                    ]);
+
+                    const allGranted = Object.values(granted).every(
+                        status => status === PermissionsAndroid.RESULTS.GRANTED
+                    );
+
+                    if (!allGranted) {
+                        Alert.alert(
+                            'Cần cấp quyền',
+                            'Ứng dụng cần quyền Bluetooth và Location để hoạt động'
+                        );
+                        return false;
+                    }
+                    return true;
+                } catch (err) {
+                    console.error('Permission error:', err);
+                    return false;
+                }
+            } else {
+                // Android 11 trở xuống
+                try {
+                    const granted = await PermissionsAndroid.request(
+                        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+                    );
+
+                    if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+                        Alert.alert(
+                            'Cần cấp quyền',
+                            'Ứng dụng cần quyền Location để quét Bluetooth'
+                        );
+                        return false;
+                    }
+                    return true;
+                } catch (err) {
+                    console.error('Permission error:', err);
+                    return false;
+                }
+            }
         }
-    }, [user]);
+        return true;
+    };
 
-    // Lắng nghe dữ liệu từ Bluetooth
-    useEffect(() => {
-        const removeListener = bluetoothService.addListener((eventType, data) => {
-            switch (eventType) {
-                case 'connected':
-                    setIsBluetoothConnected(true);
-                    setConnectedDevice(data);
-                    break;
-                case 'disconnected':
-                    setIsBluetoothConnected(false);
-                    setConnectedDevice(null);
-                    break;
-                case 'heartRate':
-                    setHeartRate(data.rate);
-                    break;
-                case 'status':
-                    setStatus(data.status);
-                    break;
-                case 'fall':
-                    handleFallDetected(data);
-                    break;
-                default:
-                    break;
-            }
-        });
-
-        return removeListener;
-    }, []);
-
-    // Kết nối realtime với server
-    const startRealtimeConnection = useCallback(() => {
-        if (!user) return;
-
-        console.log('🔗 Bắt đầu kết nối realtime...');
-
-        const unsubscribe = apiService.subscribeToRealtime(user.id, {
-            onHeartRate: (data) => {
-                setHeartRate(data.heartRate);
-            },
-            onStatusChange: (data) => {
-                setStatus(data.status);
-            },
-            onFallDetected: (data) => {
-                handleFallDetected(data);
-            }
-        });
-
-        return unsubscribe;
-    }, [user]);
-
-    const stopRealtimeConnection = useCallback(() => {
-        console.log('🔌 Ngắt kết nối realtime');
-        // Unsubscribe sẽ được gọi qua cleanup function
-    }, []);
-
-    // Quét thiết bị Bluetooth
+    // ============================================
+    // QUÉT THIẾT BỊ BLE
+    // ============================================
     const scanBluetoothDevices = async () => {
+        const hasPermission = await requestBluetoothPermissions();
+        if (!hasPermission) return;
+
+        setScanning(true);
+        setAvailableDevices([]);
+
         try {
-            setLoading(true);
-            setError(null);
-
-            const devices = await bluetoothService.scanDevices();
-            setAvailableDevices(devices);
-
-            return devices;
-        } catch (err) {
-            setError(err.message);
-            console.error('Lỗi quét Bluetooth:', err);
-            return [];
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // Kết nối Bluetooth
-    const connectBluetooth = async (deviceId) => {
-        try {
-            setLoading(true);
-            setError(null);
-
-            const response = await bluetoothService.connect(deviceId);
-
-            if (response.success) {
-                console.log('✅ Đã kết nối Bluetooth');
-                return true;
-            }
-
-            return false;
-        } catch (err) {
-            setError(err.message);
-            console.error('Lỗi kết nối Bluetooth:', err);
-            return false;
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // Ngắt kết nối Bluetooth
-    const disconnectBluetooth = async () => {
-        try {
-            await bluetoothService.disconnect();
-            console.log('✅ Đã ngắt kết nối Bluetooth');
-        } catch (err) {
-            console.error('Lỗi ngắt kết nối Bluetooth:', err);
-        }
-    };
-
-    // Lấy vị trí hiện tại
-    const getCurrentLocation = async () => {
-        try {
-            setLoading(true);
-            setError(null);
-
-            const currentLocation = await locationService.getCurrentLocation();
-            setLocation(currentLocation);
-
-            // Cập nhật lên server nếu có user
-            if (user) {
-                await apiService.updateLocation(
-                    user.id,
-                    currentLocation.latitude,
-                    currentLocation.longitude
+            const state = await bleManager.state();
+            if (state !== 'PoweredOn') {
+                Alert.alert(
+                    'Bluetooth tắt',
+                    'Vui lòng bật Bluetooth để tiếp tục'
                 );
+                setScanning(false);
+                return;
             }
 
-            return currentLocation;
-        } catch (err) {
-            setError(err.message);
-            console.error('Lỗi lấy vị trí:', err);
-            return null;
-        } finally {
-            setLoading(false);
-        }
-    };
+            // Quét thiết bị trong 10 giây
+            bleManager.startDeviceScan(null, null, (error, device) => {
+                if (error) {
+                    console.error('Scan error:', error);
+                    setScanning(false);
+                    return;
+                }
 
-    // Bắt đầu theo dõi vị trí
-    const startLocationTracking = async () => {
-        try {
-            await locationService.startTracking({
-                userId: user?.id,
-                onLocationUpdate: (newLocation) => {
-                    setLocation(newLocation);
+                if (device && device.name) {
+                    setAvailableDevices(prevDevices => {
+                        // Kiểm tra device đã tồn tại chưa
+                        const exists = prevDevices.find(d => d.id === device.id);
+                        if (!exists) {
+                            return [...prevDevices, {
+                                id: device.id,
+                                name: device.name,
+                                rssi: device.rssi,
+                                isConnectable: device.isConnectable || true,
+                            }];
+                        }
+                        return prevDevices;
+                    });
                 }
             });
 
-            console.log('✅ Đã bắt đầu theo dõi vị trí');
-        } catch (err) {
-            console.error('Lỗi bắt đầu theo dõi vị trí:', err);
+            // Dừng scan sau 10 giây
+            setTimeout(() => {
+                bleManager.stopDeviceScan();
+                setScanning(false);
+            }, 10000);
+        } catch (error) {
+            console.error('Scan error:', error);
+            setScanning(false);
+            Alert.alert('Lỗi', 'Không thể quét thiết bị Bluetooth');
         }
     };
 
-    // Dừng theo dõi vị trí
-    const stopLocationTracking = () => {
-        locationService.stopTracking();
-        console.log('🛑 Đã dừng theo dõi vị trí');
-    };
-
-    // Xử lý khi phát hiện té ngã
-    const handleFallDetected = async (data) => {
-        console.log('⚠️ Phát hiện té ngã!', data);
+    // ============================================
+    // KẾT NỐI BLUETOOTH
+    // ============================================
+    const connectBluetooth = async (deviceId) => {
+        setLoading(true);
 
         try {
-            // Cập nhật trạng thái
-            setStatus('fallen');
+            // Dừng scan nếu đang chạy
+            bleManager.stopDeviceScan();
 
-            // Lấy vị trí hiện tại
-            const currentLocation = await getCurrentLocation();
+            console.log('Connecting to device:', deviceId);
 
-            // Gửi thông báo đến gia đình
-            if (user) {
-                await notificationService.sendFallAlert(user.id, currentLocation);
+            // Kết nối đến thiết bị
+            const device = await bleManager.connectToDevice(deviceId);
+            console.log('Connected successfully');
 
-                // Ghi nhận sự cố té ngã lên server
-                await apiService.detectFall(user.id, {
-                    location: currentLocation,
-                    timestamp: data.timestamp,
-                    ...data
+            // Discover services và characteristics
+            await device.discoverAllServicesAndCharacteristics();
+            console.log('Services discovered');
+
+            setConnectedDevice(device);
+            setIsBluetoothConnected(true);
+
+            // Bắt đầu monitor dữ liệu
+            startMonitoringData(device);
+
+            setLoading(false);
+            return true;
+        } catch (error) {
+            console.error('Connection error:', error);
+            setLoading(false);
+            Alert.alert('Lỗi kết nối', 'Không thể kết nối đến thiết bị');
+            return false;
+        }
+    };
+
+    // ============================================
+    // MONITOR DỮ LIỆU TỪ ESP32
+    // ============================================
+    const startMonitoringData = (device) => {
+        device.monitorCharacteristicForService(
+            SERVICE_UUID,
+            CHARACTERISTIC_UUID,
+            (error, characteristic) => {
+                if (error) {
+                    console.error('Monitor error:', error);
+                    return;
+                }
+
+                if (characteristic?.value) {
+                    try {
+                        // Decode base64 value
+                        const rawData = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+                        console.log('Received data:', rawData);
+
+                        // Parse JSON
+                        const data = JSON.parse(rawData);
+
+                        // Cập nhật sensor data
+                        setSensorData({
+                            temperature: data.temperature,
+                            humidity: data.humidity,
+                            light: data.light,
+                            sensor: data.sensor,
+                            status: data.status,
+                            timestamp: new Date().toLocaleTimeString('vi-VN'),
+                        });
+
+                        // Lưu vào history
+                        setDataHistory(prev => [
+                            {
+                                ...data,
+                                receivedAt: new Date().toISOString(),
+                            },
+                            ...prev
+                        ].slice(0, 100)); // Giữ 100 bản ghi gần nhất
+
+                    } catch (e) {
+                        console.error('Parse error:', e);
+                    }
+                }
+            }
+        );
+    };
+
+    // ============================================
+    // NGẮT KẾT NỐI
+    // ============================================
+    const disconnectBluetooth = async () => {
+        if (connectedDevice) {
+            try {
+                await connectedDevice.cancelConnection();
+                setConnectedDevice(null);
+                setIsBluetoothConnected(false);
+                setSensorData({
+                    temperature: null,
+                    humidity: null,
+                    light: null,
+                    sensor: null,
+                    status: false,
+                    timestamp: null,
                 });
+                console.log('Disconnected successfully');
+            } catch (error) {
+                console.error('Disconnect error:', error);
             }
-        } catch (err) {
-            console.error('Lỗi xử lý sự cố té ngã:', err);
         }
     };
 
-    // Lấy lịch sử đo
-    const fetchMeasurementHistory = async () => {
-        try {
-            setLoading(true);
-            setError(null);
-
-            if (!user) return;
-
-            const response = await apiService.getMeasurementHistory(user.id);
-
-            if (response.success) {
-                setMeasurementHistory(response.data.history);
-            }
-        } catch (err) {
-            setError(err.message);
-            console.error('Lỗi lấy lịch sử:', err);
-        } finally {
-            setLoading(false);
+    // ============================================
+    // ĐỌC DỮ LIỆU NGAY LẬP TỨC
+    // ============================================
+    const readSensorData = async () => {
+        if (!connectedDevice) {
+            Alert.alert('Lỗi', 'Chưa kết nối đến thiết bị');
+            return null;
         }
-    };
-
-    // Làm mới dữ liệu
-    const refresh = async () => {
-        if (!user) return;
 
         try {
-            setLoading(true);
+            const characteristic = await connectedDevice.readCharacteristicForService(
+                SERVICE_UUID,
+                CHARACTERISTIC_UUID
+            );
 
-            // Lấy tất cả dữ liệu mới
-            const [heartRateRes, statusRes, locationRes, historyRes] = await Promise.all([
-                apiService.getHeartRate(user.id),
-                apiService.getStatus(user.id),
-                apiService.getLocation(user.id),
-                apiService.getMeasurementHistory(user.id)
-            ]);
-
-            setHeartRate(heartRateRes.data.heartRate);
-            setStatus(statusRes.data.status);
-            setLocation(locationRes.data.location);
-            setMeasurementHistory(historyRes.data.history);
-
-            console.log('✅ Đã làm mới dữ liệu');
-        } catch (err) {
-            console.error('Lỗi làm mới dữ liệu:', err);
-        } finally {
-            setLoading(false);
+            if (characteristic?.value) {
+                const rawData = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+                const data = JSON.parse(rawData);
+                return data;
+            }
+        } catch (error) {
+            console.error('Read error:', error);
+            Alert.alert('Lỗi', 'Không thể đọc dữ liệu từ thiết bị');
+            return null;
         }
     };
 
     const value = {
-        // Bluetooth
+        // States
         isBluetoothConnected,
         connectedDevice,
         availableDevices,
+        sensorData,
+        loading,
+        scanning,
+        dataHistory,
+
+        // Functions
         scanBluetoothDevices,
         connectBluetooth,
         disconnectBluetooth,
-
-        // Dữ liệu realtime
-        heartRate,
-        status,
-        location,
-
-        // Lịch sử
-        measurementHistory,
-        fetchMeasurementHistory,
-
-        // Location tracking
-        getCurrentLocation,
-        startLocationTracking,
-        stopLocationTracking,
-
-        // Actions
-        refresh,
-        handleFallDetected,
-
-        // State
-        loading,
-        error,
-        clearError: () => setError(null)
+        readSensorData,
     };
 
-    return <IoTContext.Provider value={value}>{children}</IoTContext.Provider>;
+    return (
+        <IoTContext.Provider value={value}>
+            {children}
+        </IoTContext.Provider>
+    );
 };
 
 export default IoTContext;
