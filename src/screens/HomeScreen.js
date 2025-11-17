@@ -199,6 +199,14 @@ const HomeScreen = ({ navigation }) => {
                         <Text style={styles.actionEmoji}>🗺️</Text>
                         <Text style={styles.actionText}>Bản đồ</Text>
                     </TouchableOpacity>
+
+                    <TouchableOpacity
+                        style={styles.actionButton}
+                        onPress={() => navigation.navigate('Debug')}
+                    >
+                        <Text style={styles.actionEmoji}>🗺️</Text>
+                        <Text style={styles.actionText}>DEBUG</Text>
+                    </TouchableOpacity>
                 </View>
 
                 {/* Emergency Alert for Family Members */}
