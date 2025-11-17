@@ -1,5 +1,4 @@
-// HomeScreen.js - KHÔNG DÙNG EXPO, chỉ RN thuần + vector-icons
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
     View,
     Text,
@@ -12,27 +11,20 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../contexts/AuthContext';
+import { useIoT } from '../contexts/IoTContext';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 const { width } = Dimensions.get('window');
 
-const sampleData = {
-    spo2: 98,
-    heartRate: 75,
-    heartRateValid: true,
-    fallDetected: false,
-    severity: 'none',
-    batteryLevel: 85,
-    isCharging: false,
-    signalQuality: 'excellent',
-    deviceId: 'ESP32-001',
-    step: 24,
-};
-
 const HomeScreen = ({ navigation }) => {
     const { user, logout } = useAuth();
-    const [data, setData] = useState(sampleData);
-    const [refreshing, setRefreshing] = useState(false);
+    const {
+        isBluetoothConnected,
+        connectedDevice,
+        sensorData,
+        readSensorData,
+        loading
+    } = useIoT();
 
     const fadeAnim = useRef(new Animated.Value(0)).current;
     const slideAnim = useRef(new Animated.Value(50)).current;
@@ -44,18 +36,56 @@ const HomeScreen = ({ navigation }) => {
         ]).start();
     }, []);
 
-    const onRefresh = () => {
-        setRefreshing(true);
-        setTimeout(() => {
-            setData({ ...sampleData, step: sampleData.step + Math.floor(Math.random() * 20) });
-            setRefreshing(false);
-        }, 1000);
+    const onRefresh = async () => {
+        if (isBluetoothConnected) {
+            await readSensorData();
+        }
+    };
+
+    // Xác định trạng thái kết nối
+    const getConnectionStatus = () => {
+        if (!isBluetoothConnected) {
+            return {
+                color: '#ef4444',
+                text: 'Chưa kết nối',
+                icon: 'close-circle'
+            };
+        }
+        return {
+            color: '#22c55e',
+            text: 'Đang kết nối',
+            icon: 'checkmark-circle'
+        };
+    };
+
+    const connectionStatus = getConnectionStatus();
+
+    // Xác định màu sắc cho SpO2
+    const getSpo2Color = (spo2) => {
+        if (!spo2 || spo2 === 'N/A') return '#94a3b8';
+        if (spo2 >= 95) return '#22c55e';
+        if (spo2 >= 90) return '#f59e0b';
+        return '#ef4444';
+    };
+
+    // Xác định màu sắc cho nhịp tim
+    const getHeartRateColor = (hr, valid) => {
+        if (!valid || !hr || hr === 'N/A') return '#94a3b8';
+        if (hr >= 60 && hr <= 100) return '#22c55e';
+        if (hr > 100 && hr <= 120) return '#f59e0b';
+        return '#ef4444';
     };
 
     return (
         <SafeAreaView style={styles.container}>
             <ScrollView
-                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0ea5e9" />}
+                refreshControl={
+                    <RefreshControl
+                        refreshing={loading}
+                        onRefresh={onRefresh}
+                        tintColor="#0ea5e9"
+                    />
+                }
             >
                 {/* Header */}
                 <Animated.View style={[styles.header, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
@@ -70,57 +100,166 @@ const HomeScreen = ({ navigation }) => {
 
                 {/* Main Card */}
                 <Animated.View style={[styles.mainCard, { opacity: fadeAnim }]}>
-                    {/* Header xanh đậm thay gradient */}
-                    <View style={styles.headerBlue}>
-                        <Icon name="bluetooth" size={24} color="#fff" />
-                        <Text style={styles.deviceId}>{data.deviceId}</Text>
-                        <View style={styles.statusDot} />
-                        <Text style={styles.onlineText}>Đang kết nối</Text>
-                    </View>
-
-                    <View style={styles.vitalContainer}>
-                        <View style={styles.vitalItem}>
-                            <View style={styles.vitalIcon}>
-                                <Icon name="water" size={28} color="#0ea5e9" />
-                            </View>
-                            <Text style={styles.vitalValue}>{data.spo2}<Text style={styles.unit}>%</Text></Text>
-                            <Text style={styles.vitalLabel}>SpO2</Text>
-                        </View>
-
-                        <View style={styles.vitalItem}>
-                            <View style={[styles.vitalIcon, { backgroundColor: data.heartRateValid ? '#fee2e2' : '#f1f5f9' }]}>
-                                <Icon name="heart" size={28} color={data.heartRateValid ? '#ef4444' : '#94a3b8'} />
-                            </View>
-                            <Text style={styles.vitalValue}>{data.heartRate}<Text style={styles.unit}> bpm</Text></Text>
-                            <Text style={styles.vitalLabel}>Nhịp tim</Text>
-                        </View>
-
-                        <View style={styles.vitalItem}>
-                            <View style={styles.vitalIcon}>
-                                <Icon name="walk" size={28} color="#8b5cf6" />
-                            </View>
-                            <Text style={styles.vitalValue}>{data.step}</Text>
-                            <Text style={styles.vitalLabel}>Bước chân</Text>
-                        </View>
-                    </View>
-
-                    <View style={styles.extraInfo}>
-                        <View style={styles.infoRow}>
-                            <Icon name={data.batteryLevel > 20 ? "battery-charging" : "battery-dead"} size={22} color={data.batteryLevel > 20 ? '#22c55e' : '#ef4444'} />
-                            <Text style={styles.infoText}>{data.batteryLevel}% {data.isCharging && '(sạc)'}</Text>
-                        </View>
-                        <View style={styles.infoRow}>
-                            <Icon name="wifi" size={22} color="#22c55e" />
-                            <Text style={styles.infoText}>Tín hiệu tốt</Text>
-                        </View>
-                    </View>
-
-                    <View style={[styles.fallAlert, data.fallDetected && styles.fallActive]}>
-                        <Icon name="warning" size={24} color={data.fallDetected ? '#ef4444' : '#94a3b8'} />
-                        <Text style={[styles.fallText, data.fallDetected && { color: '#991b1b' }]}>
-                            {data.fallDetected ? 'ĐÃ PHÁT HIỆN TÉ NGÃ!' : 'Chưa phát hiện té ngã'}
+                    {/* Header - Hiển thị trạng thái kết nối */}
+                    <View style={[
+                        styles.headerBlue,
+                        !isBluetoothConnected && styles.headerDisconnected
+                    ]}>
+                        <Icon
+                            name={isBluetoothConnected ? "bluetooth" : "bluetooth-outline"}
+                            size={24}
+                            color="#fff"
+                        />
+                        <Text style={styles.deviceId}>
+                            {isBluetoothConnected
+                                ? (connectedDevice?.name || sensorData.deviceId || 'ESP32-001')
+                                : 'Chưa kết nối'
+                            }
                         </Text>
+                        <Icon
+                            name={connectionStatus.icon}
+                            size={18}
+                            color={connectionStatus.color}
+                            style={{ marginLeft: 12 }}
+                        />
+                        <Text style={styles.onlineText}>{connectionStatus.text}</Text>
                     </View>
+
+                    {isBluetoothConnected ? (
+                        <>
+                            {/* Vital Signs */}
+                            <View style={styles.vitalContainer}>
+                                <View style={styles.vitalItem}>
+                                    <View style={[
+                                        styles.vitalIcon,
+                                        { backgroundColor: getSpo2Color(sensorData.spo2) + '20' }
+                                    ]}>
+                                        <Icon
+                                            name="water"
+                                            size={28}
+                                            color={getSpo2Color(sensorData.spo2)}
+                                        />
+                                    </View>
+                                    <Text style={styles.vitalValue}>
+                                        {sensorData.spo2 ?? '--'}
+                                        <Text style={styles.unit}>%</Text>
+                                    </Text>
+                                    <Text style={styles.vitalLabel}>SpO2</Text>
+                                </View>
+
+                                <View style={styles.vitalItem}>
+                                    <View style={[
+                                        styles.vitalIcon,
+                                        { backgroundColor: getHeartRateColor(sensorData.heartRate, sensorData.heartRateValid) + '20' }
+                                    ]}>
+                                        <Icon
+                                            name="heart"
+                                            size={28}
+                                            color={getHeartRateColor(sensorData.heartRate, sensorData.heartRateValid)}
+                                        />
+                                    </View>
+                                    <Text style={styles.vitalValue}>
+                                        {sensorData.heartRate ?? '--'}
+                                        <Text style={styles.unit}> bpm</Text>
+                                    </Text>
+                                    <Text style={styles.vitalLabel}>Nhịp tim</Text>
+                                    {!sensorData.heartRateValid && sensorData.heartRate && (
+                                        <Text style={styles.invalidText}>Không hợp lệ</Text>
+                                    )}
+                                </View>
+
+                                <View style={styles.vitalItem}>
+                                    <View style={styles.vitalIcon}>
+                                        <Icon name="walk" size={28} color="#8b5cf6" />
+                                    </View>
+                                    <Text style={styles.vitalValue}>
+                                        {sensorData.step ?? '--'}
+                                    </Text>
+                                    <Text style={styles.vitalLabel}>Bước chân</Text>
+                                </View>
+                            </View>
+
+                            {/* Extra Info */}
+                            <View style={styles.extraInfo}>
+                                <View style={styles.infoRow}>
+                                    <Icon
+                                        name={sensorData.isCharging ? "battery-charging" :
+                                            sensorData.batteryLevel > 20 ? "battery-half" : "battery-dead"}
+                                        size={22}
+                                        color={sensorData.batteryLevel > 20 ? '#22c55e' : '#ef4444'}
+                                    />
+                                    <Text style={styles.infoText}>
+                                        {sensorData.batteryLevel ?? '--'}%
+                                        {sensorData.isCharging && ' (đang sạc)'}
+                                    </Text>
+                                </View>
+                                <View style={styles.infoRow}>
+                                    <Icon
+                                        name="pulse"
+                                        size={22}
+                                        color={
+                                            sensorData.signalQuality === 'excellent' ? '#22c55e' :
+                                                sensorData.signalQuality === 'good' ? '#f59e0b' :
+                                                    '#ef4444'
+                                        }
+                                    />
+                                    <Text style={styles.infoText}>
+                                        {sensorData.signalQuality === 'excellent' ? 'Tín hiệu tốt' :
+                                            sensorData.signalQuality === 'good' ? 'Tín hiệu trung bình' :
+                                                sensorData.signalQuality === 'poor' ? 'Tín hiệu yếu' :
+                                                    'Không xác định'}
+                                    </Text>
+                                </View>
+                            </View>
+
+                            {/* Fall Alert */}
+                            <View style={[
+                                styles.fallAlert,
+                                sensorData.fallDetected && styles.fallActive
+                            ]}>
+                                <Icon
+                                    name={sensorData.fallDetected ? "warning" : "shield-checkmark"}
+                                    size={24}
+                                    color={sensorData.fallDetected ? '#ef4444' : '#22c55e'}
+                                />
+                                <Text style={[
+                                    styles.fallText,
+                                    sensorData.fallDetected && { color: '#991b1b' }
+                                ]}>
+                                    {sensorData.fallDetected
+                                        ? `ĐÃ PHÁT HIỆN TÉ NGÃ! (${sensorData.severity || 'N/A'})`
+                                        : 'Chưa phát hiện té ngã'
+                                    }
+                                </Text>
+                            </View>
+
+                            {/* Timestamp */}
+                            {sensorData.timestamp && (
+                                <View style={styles.timestampContainer}>
+                                    <Icon name="time-outline" size={16} color="#64748b" />
+                                    <Text style={styles.timestampText}>
+                                        Cập nhật: {sensorData.timestamp}
+                                    </Text>
+                                </View>
+                            )}
+                        </>
+                    ) : (
+                        /* Disconnected State */
+                        <View style={styles.disconnectedContainer}>
+                            <Icon name="bluetooth-outline" size={80} color="#cbd5e1" />
+                            <Text style={styles.disconnectedTitle}>Chưa kết nối thiết bị</Text>
+                            <Text style={styles.disconnectedText}>
+                                Vui lòng kết nối với thiết bị Bluetooth để xem dữ liệu sức khỏe
+                            </Text>
+                            <TouchableOpacity
+                                style={styles.connectButton}
+                                onPress={() => navigation.navigate('Bluetooth')}
+                            >
+                                <Icon name="bluetooth" size={20} color="#fff" />
+                                <Text style={styles.connectButtonText}>Kết nối thiết bị</Text>
+                            </TouchableOpacity>
+                        </View>
+                    )}
                 </Animated.View>
 
                 {/* Menu */}
@@ -154,29 +293,147 @@ const styles = StyleSheet.create({
     header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20 },
     greeting: { fontSize: 16, color: '#64748b' },
     userName: { fontSize: 26, fontWeight: '800', color: '#0c4a6e' },
-    mainCard: { margin: 20, backgroundColor: '#fff', borderRadius: 24, overflow: 'hidden',
-        shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.15, shadowRadius: 20, elevation: 20 },
-    headerBlue: { backgroundColor: '#0ea5e9', padding: 20, flexDirection: 'row', alignItems: 'center' },
-    deviceId: { color: '#fff', fontWeight: '700', marginLeft: 12, fontSize: 17 },
-    statusDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#22c55e', marginLeft: 12 },
+    mainCard: {
+        margin: 20,
+        backgroundColor: '#fff',
+        borderRadius: 24,
+        overflow: 'hidden',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.15,
+        shadowRadius: 20,
+        elevation: 20
+    },
+    headerBlue: {
+        backgroundColor: '#0ea5e9',
+        padding: 20,
+        flexDirection: 'row',
+        alignItems: 'center'
+    },
+    headerDisconnected: {
+        backgroundColor: '#64748b'
+    },
+    deviceId: { color: '#fff', fontWeight: '700', marginLeft: 12, fontSize: 17, flex: 1 },
     onlineText: { color: '#fff', marginLeft: 8, fontWeight: '600' },
-    vitalContainer: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 32 },
+    vitalContainer: {
+        flexDirection: 'row',
+        justifyContent: 'space-around',
+        paddingVertical: 32
+    },
     vitalItem: { alignItems: 'center' },
-    vitalIcon: { width: 62, height: 62, borderRadius: 31, backgroundColor: '#f8fafc', justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
+    vitalIcon: {
+        width: 62,
+        height: 62,
+        borderRadius: 31,
+        backgroundColor: '#f8fafc',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 10
+    },
     vitalValue: { fontSize: 28, fontWeight: '800', color: '#1e293b' },
     unit: { fontSize: 15, color: '#64748b' },
     vitalLabel: { fontSize: 13, color: '#64748b', marginTop: 4 },
-    extraInfo: { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16, backgroundColor: '#f8fafc' },
+    invalidText: { fontSize: 11, color: '#ef4444', marginTop: 2 },
+    extraInfo: {
+        flexDirection: 'row',
+        justifyContent: 'space-around',
+        paddingVertical: 16,
+        backgroundColor: '#f8fafc'
+    },
     infoRow: { flexDirection: 'row', alignItems: 'center' },
     infoText: { marginLeft: 10, fontWeight: '600', color: '#475569' },
-    fallAlert: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16, backgroundColor: '#fef3c7' },
+    fallAlert: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        backgroundColor: '#f0fdf4'
+    },
     fallActive: { backgroundColor: '#fee2e2' },
-    fallText: { marginLeft: 12, fontWeight: '700', color: '#92400e' },
-    menuGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 20, justifyContent: 'space-between' },
-    menuItem: { width: width / 2 - 30, alignItems: 'center', marginBottom: 24 },
-    menuIconBg: { width: 82, height: 82, borderRadius: 24, backgroundColor: '#f1f5f9', justifyContent: 'center', alignItems: 'center',
-        shadowColor: '#000', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.12, shadowRadius: 12, elevation: 12 },
-    menuLabel: { marginTop: 12, fontSize: 14.5, fontWeight: '600', color: '#1e293b' },
+    fallText: { marginLeft: 12, fontWeight: '700', color: '#166534' },
+    timestampContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 12,
+        backgroundColor: '#f8fafc',
+        borderTopWidth: 1,
+        borderTopColor: '#e2e8f0'
+    },
+    timestampText: {
+        marginLeft: 6,
+        fontSize: 12,
+        color: '#64748b',
+        fontWeight: '500'
+    },
+    disconnectedContainer: {
+        paddingVertical: 60,
+        paddingHorizontal: 30,
+        alignItems: 'center'
+    },
+    disconnectedTitle: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: '#0f172a',
+        marginTop: 20,
+        marginBottom: 8
+    },
+    disconnectedText: {
+        fontSize: 14,
+        color: '#64748b',
+        textAlign: 'center',
+        lineHeight: 20,
+        marginBottom: 24
+    },
+    connectButton: {
+        backgroundColor: '#0ea5e9',
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 24,
+        paddingVertical: 14,
+        borderRadius: 12,
+        shadowColor: '#0ea5e9',
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 4 },
+        elevation: 6
+    },
+    connectButtonText: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: '700',
+        marginLeft: 8
+    },
+    menuGrid: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        padding: 20,
+        justifyContent: 'space-between'
+    },
+    menuItem: {
+        width: width / 2 - 30,
+        alignItems: 'center',
+        marginBottom: 24
+    },
+    menuIconBg: {
+        width: 82,
+        height: 82,
+        borderRadius: 24,
+        backgroundColor: '#f1f5f9',
+        justifyContent: 'center',
+        alignItems: 'center',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.12,
+        shadowRadius: 12,
+        elevation: 12
+    },
+    menuLabel: {
+        marginTop: 12,
+        fontSize: 14.5,
+        fontWeight: '600',
+        color: '#1e293b'
+    },
 });
 
 export default HomeScreen;
